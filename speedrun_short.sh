@@ -10,10 +10,12 @@
 # 3) Example launch with wandb logging, but see below for setting up wandb first:
 # WANDB_RUN=speedrun screen -L -Logfile speedrun.log -S speedrun bash speedrun.sh
 # 4) Example launch with SSM model:
-# MODEL_TYPE=ssm bash speedrun.sh
+# MODEL_TYPE=ssm bash speedrun_short.sh
 # 5) Example launch with SSM model and wandb:
-# MODEL_TYPE=ssm WANDB_RUN=speedrun bash speedrun.sh
+# MODEL_TYPE=ssm WANDB_RUN=speedrun bash speedrun_short.sh
 
+# symlink the cache directory to the scratch directory
+ln -s ~/scratch/.cache ~/.cache
 
 # Default intermediate artifacts directory is in ~/.cache/nanochat
 export OMP_NUM_THREADS=1
@@ -47,7 +49,7 @@ fi
 # -----------------------------------------------------------------------------
 # Model type setup
 # Set MODEL_TYPE=ssm to use SSM model instead of GPT, e.g.:
-# MODEL_TYPE=ssm bash speedrun.sh
+# MODEL_TYPE=ssm bash speedrun_short.sh
 if [ -z "$MODEL_TYPE" ]; then
     # by default use GPT model
     MODEL_TYPE="gpt"
@@ -98,20 +100,20 @@ echo "Waiting for dataset download to complete..."
 wait $DATASET_DOWNLOAD_PID
 
 # Number of processes/GPUs to use
-NPROC_PER_NODE=8
+NPROC_PER_NODE=4
 
 # Model depth
-MODEL_DEPTH=20
+MODEL_DEPTH=40
 
 # Model tag
 MODEL_TAG="${MODEL_TYPE}_d${MODEL_DEPTH}"
 
 # pretrain the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$MODEL_DEPTH --run=$WANDB_RUN --model_type=$MODEL_TYPE
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$MODEL_DEPTH --run=$WANDB_RUN --model_type=$MODEL_TYPE --num_iterations=1
 # evaluate the model on a larger chunk of train/val data and draw some samples
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_loss -- --model-tag=$MODEL_TAG
 # evaluate the model on CORE tasks
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --model-tag=$MODEL_TAG
+# torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --model-tag=$MODEL_TAG --max-per-task=10
 
 # -----------------------------------------------------------------------------
 # Midtraining (teach the model conversation special tokens, tool use, multiple choice)
@@ -121,15 +123,15 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- -
 curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run midtraining and eval the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN --model-tag=$MODEL_TAG
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i mid --model-tag=$MODEL_TAG
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN --num_iterations=1 --model-tag=$MODEL_TAG
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i mid --model-tag=$MODEL_TAG -x 1
 
 # -----------------------------------------------------------------------------
 # Supervised Finetuning (domain adaptation to each sequence all by itself per row)
 
 # train sft and re-eval right away (should see a small bump)
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --model-tag=$MODEL_TAG
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft --model-tag=$MODEL_TAG
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --run=$WANDB_RUN --num_iterations=2 --model-tag=$MODEL_TAG
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft --model-tag=$MODEL_TAG -x 1
 
 # chat with the model over CLI! Leave out the -p to chat interactively
 # python -m scripts.chat_cli --model-tag=$MODEL_TAG -p "Why is the sky blue?"

@@ -19,7 +19,8 @@ from contextlib import contextmanager
 from collections import deque
 from nanochat.common import compute_init, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
-from contextlib import nullcontext 
+from contextlib import nullcontext
+from mamba_ssm.utils.generation import InferenceParams
 
 # -----------------------------------------------------------------------------
 # Calculator tool helpers
@@ -154,6 +155,18 @@ class KVCache:
         return key_view, value_view
 
 
+def prefill_inference_params(target, source):
+    """Prefill the inference parameters from source to target (expand batch dimension)."""
+    for layer_idx, (conv_state, ssm_state) in source.key_value_memory_dict.items():
+        new_conv_state = torch.zeros((target.max_batch_size,) + conv_state.shape[1:], 
+                                     dtype=conv_state.dtype, device=conv_state.device)
+        new_ssm_state = torch.zeros((target.max_batch_size,) + ssm_state.shape[1:],
+                                    dtype=ssm_state.dtype, device=ssm_state.device)
+        # Broadcast the single batch item to all batch positions
+        new_conv_state[:] = conv_state
+        new_ssm_state[:] = ssm_state
+        target.key_value_memory_dict[layer_idx] = (new_conv_state, new_ssm_state)
+
 # -----------------------------------------------------------------------------
 @torch.inference_mode()
 def sample_next_token(logits, rng, temperature=1.0, top_k=None):
@@ -186,13 +199,15 @@ class RowState:
 
 class Engine:
 
-    def __init__(self, model, tokenizer):
+    def __init__(self, model, tokenizer, model_type):
         self.model = model
+        self.model_type = model_type
+        assert model_type in ["gpt", "ssm"], "model_type must be 'gpt' or 'ssm'"
         self.tokenizer = tokenizer # needed for tool use
-
+        
     @torch.inference_mode()
     def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42):
-        """Same as generate, but does single prefill and then clones the KV cache."""
+        """Generate tokens using either GPT (with KV cache) or SSM (with InferenceParams)."""
         assert isinstance(tokens, list) and isinstance(tokens[0], int), "expecting list of ints"
         device = self.model.get_device()
         rng = torch.Generator(device=device)
@@ -207,29 +222,59 @@ class Engine:
         assistant_end = get_special("<|assistant_end|>") # if sampled, ends row
         bos = self.tokenizer.get_bos_token_id() # if sampled, ends row
 
-        # 1) Run a batch 1 prefill of the prompt tokens
         m = self.model.config
-        kv_model_kwargs = {"num_heads": m.n_kv_head, "head_dim": m.n_embd // m.n_head, "num_layers": m.n_layer}
-        kv_cache_prefill = KVCache(
-            batch_size=1,
-            seq_len=len(tokens),
-            **kv_model_kwargs,
-        )
-        ids = torch.tensor([tokens], dtype=torch.long, device=device)
-        logits = self.model.forward(ids, kv_cache=kv_cache_prefill)
-        logits = logits[:, -1, :]
-        next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
-        sampled_tokens = next_ids[:, 0].tolist()
+        
+        if self.model_type == "gpt":
+            # GPT model: use KVCache
+            # 1) Run a batch 1 prefill of the prompt tokens
+            kv_model_kwargs = {"num_heads": m.n_kv_head, "head_dim": m.n_embd // m.n_head, "num_layers": m.n_layer}
+            kv_cache_prefill = KVCache(
+                batch_size=1,
+                seq_len=len(tokens),
+                **kv_model_kwargs,
+            )
+            ids = torch.tensor([tokens], dtype=torch.long, device=device)
+            logits = self.model.forward(ids, kv_cache=kv_cache_prefill)
+            logits = logits[:, -1, :]
+            logits = logits.repeat(num_samples, 1)
+            next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
+            sampled_tokens = next_ids[:, 0].tolist()
 
-        # 2) Replicate the KV cache for each sample/row
-        kv_length_hint = (len(tokens) + max_tokens) if max_tokens is not None else self.model.config.sequence_len
-        kv_cache_decode = KVCache(
-            batch_size=num_samples,
-            seq_len=kv_length_hint,
-            **kv_model_kwargs,
-        )
-        kv_cache_decode.prefill(kv_cache_prefill)
-        del kv_cache_prefill # no need to keep this memory around
+            # 2) Replicate the KV cache for each sample/row
+            kv_length_hint = (len(tokens) + max_tokens) if max_tokens is not None else m.sequence_len
+            kv_cache_decode = KVCache(
+                batch_size=num_samples,
+                seq_len=kv_length_hint,
+                **kv_model_kwargs,
+            )
+            kv_cache_decode.prefill(kv_cache_prefill)
+            del kv_cache_prefill # no need to keep this memory around
+        else:
+            # SSM model: use InferenceParams
+            max_seqlen = (len(tokens) + max_tokens) if max_tokens is not None else m.sequence_len
+            inference_params = InferenceParams(
+                max_seqlen=max_seqlen,
+                max_batch_size=1,
+            )
+            inference_params.reset(max_seqlen, 1)
+            # Prefill: process the prompt tokens with full batch size (broadcast prompt to all samples)
+            ids = torch.tensor([tokens], dtype=torch.long, device=device)
+            for t in range(len(tokens)):
+                logits = self.model.forward(ids[:, t:t+1], inference_params=inference_params)
+            logits = logits[:, 0, :]
+            logits = logits.repeat(num_samples, 1)
+            next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
+            sampled_tokens = next_ids[:, 0].tolist()
+            
+            # 2) Replicate the InferenceParams for each sample/row
+            inference_params_decode = InferenceParams(
+                max_seqlen=max_seqlen,
+                max_batch_size=num_samples,
+            )
+            inference_params_decode.reset(max_seqlen, num_samples)
+            prefill_inference_params(inference_params_decode, inference_params)
+            inference_params_decode.seqlen_offset = len(tokens)
+            del inference_params # no need to keep this memory around
 
         # 3) Initialize states for each sample
         row_states = [RowState(tokens.copy()) for _ in range(num_samples)]
@@ -245,15 +290,14 @@ class Engine:
             if all(state.completed for state in row_states):
                 break
 
-            # Get sampled tokens - either from prefill or from forward pass
             if first_iteration:
-                # Use the tokens we already sampled from prefill
-                sampled_tokens = [sampled_tokens[0]] * num_samples  # Broadcast first token to all rows
-                # TODO: we should sample a token for each row instead of broadcasting
                 first_iteration = False
             else:
                 # Forward the model and get the next token for each row
-                logits = self.model.forward(ids, kv_cache=kv_cache_decode)  # (B, T, vocab_size)
+                if self.model_type == "gpt":
+                    logits = self.model.forward(ids, kv_cache=kv_cache_decode)  # (B, T, vocab_size)
+                else:
+                    logits = self.model.forward(ids[:, -1:], inference_params=inference_params_decode)  # (B, 1, vocab_size)
                 logits = logits[:, -1, :]  # (B, vocab_size) at last time step
                 next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
                 sampled_tokens = next_ids[:, 0].tolist()
@@ -295,6 +339,9 @@ class Engine:
             num_generated += 1
             # Prepare ids for next iteration
             ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(1)
+            # Update inference_params for SSM models
+            if self.model_type == "ssm":
+                inference_params_decode.seqlen_offset += 1
 
     def generate_batch(self, tokens, num_samples=1, **kwargs):
         """
@@ -356,7 +403,7 @@ if __name__ == "__main__":
     reference_ids = generated_tokens
     # generate tokens with Engine
     generated_tokens = []
-    engine = Engine(model, tokenizer)
+    engine = Engine(model, tokenizer, model_type="gpt")
     stream = engine.generate(prompt_tokens, num_samples=1, **kwargs) # note: runs in fp32
     torch.cuda.synchronize()
     t0 = time.time()

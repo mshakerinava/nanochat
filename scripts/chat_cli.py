@@ -29,6 +29,7 @@ ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type
 ptdtype = torch.float32 if args.dtype == 'float32' else torch.bfloat16
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
+model_type = meta.get("model_type", "gpt")  # default to "gpt" for backward compatibility
 
 # Special tokens for the chat state machine
 bos = tokenizer.get_bos_token_id()
@@ -36,7 +37,7 @@ user_start, user_end = tokenizer.encode_special("<|user_start|>"), tokenizer.enc
 assistant_start, assistant_end = tokenizer.encode_special("<|assistant_start|>"), tokenizer.encode_special("<|assistant_end|>")
 
 # Create Engine for efficient generation
-engine = Engine(model, tokenizer)
+engine = Engine(model, tokenizer, model_type=model_type)
 
 print("\nNanoChat Interactive Mode")
 print("-" * 50)

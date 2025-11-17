@@ -10,6 +10,7 @@ import torch
 
 from nanochat.common import get_base_dir
 from nanochat.gpt import GPT, GPTConfig
+from nanochat.ssm import SSM, SSMConfig
 from nanochat.tokenizer import get_tokenizer
 from nanochat.common import setup_default_logging
 
@@ -21,8 +22,8 @@ def log0(message):
         logger.info(message)
 
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
+    os.makedirs(checkpoint_dir, exist_ok=True)
     if rank == 0:
-        os.makedirs(checkpoint_dir, exist_ok=True)
         # Save the model state parameters
         model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
         torch.save(model_data, model_path)
@@ -73,10 +74,18 @@ def build_model(checkpoint_dir, step, device, phase):
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     model_config_kwargs = meta_data["model_config"]
-    log0(f"Building model with config: {model_config_kwargs}")
-    model_config = GPTConfig(**model_config_kwargs)
-    with torch.device("meta"):
-        model = GPT(model_config)
+    model_type = meta_data.get("model_type", "gpt")  # default to "gpt" for backward compatibility
+    log0(f"Building {model_type} model with config: {model_config_kwargs}")
+    if model_type == "gpt":
+        model_config = GPTConfig(**model_config_kwargs)
+        with torch.device("meta"):
+            model = GPT(model_config)
+    elif model_type == "ssm":
+        model_config = SSMConfig(**model_config_kwargs)
+        with torch.device("meta"):
+            model = SSM(model_config)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}. Must be 'gpt' or 'ssm'")
     # Load the model state
     model.to_empty(device=device)
     model.init_weights() # note: this is dumb, but we need to init the rotary embeddings. TODO: fix model re-init
@@ -98,10 +107,11 @@ def find_largest_model(checkpoint_dir):
     model_tags = [f for f in os.listdir(checkpoint_dir) if os.path.isdir(os.path.join(checkpoint_dir, f))]
     if not model_tags:
         raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
-    # 1) normally all model tags are of the form d<number>, try that first:
+    # 1) normally all model tags are of the form d<number> or <model_type>_d<number>, try that first:
     candidates = []
     for model_tag in model_tags:
-        match = re.match(r"d(\d+)", model_tag)
+        # Try to match both "d20" and "gpt_d20" or "ssm_d20" patterns
+        match = re.match(r"(?:gpt_|ssm_)?d(\d+)", model_tag)
         if match:
             model_depth = int(match.group(1))
             candidates.append((model_depth, model_tag))

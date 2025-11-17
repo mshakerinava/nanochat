@@ -67,6 +67,8 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-mi
 
 # Load the model and tokenizer
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=model_tag, step=step)
+model_type = meta.get("model_type", "gpt")  # default to "gpt" for backward compatibility
+print0(f"Loaded {model_type} model from base checkpoint")
 pretrain_batch_size = meta.get("device_batch_size", None)
 if pretrain_batch_size is not None and device_batch_size > pretrain_batch_size:
     print0(f"FOOTGUN WARNING: base model training used device_batch_size {pretrain_batch_size}, did you pass in a good --device_batch_size to this script?")
@@ -207,8 +209,24 @@ while True:
 
     # save checkpoint at the end of the run (only on master process)
     if master_process and last_step and not dry_run:
-        output_dirname = f"d{depth}" # e.g. d12
+        output_dirname = f"{model_type}_d{depth}" # e.g. gpt_d12 or ssm_d12
         checkpoint_dir = os.path.join(base_dir, "mid_checkpoints", output_dirname)
+        # Build model_config based on model type
+        model_config = {
+            "sequence_len": max_seq_len,
+            "vocab_size": tokenizer.get_vocab_size(),
+            "n_layer": depth,
+            "n_embd": model.config.n_embd,
+        }
+        # Add GPT-specific fields
+        if model_type == "gpt":
+            model_config["n_head"] = model.config.n_head
+            model_config["n_kv_head"] = model.config.n_kv_head
+        # Add SSM-specific fields
+        elif model_type == "ssm":
+            model_config["ssm_state_dim"] = model.config.ssm_state_dim
+            model_config["ssm_conv_kernel"] = model.config.ssm_conv_kernel
+            model_config["expand_factor"] = model.config.expand_factor
         save_checkpoint(
             checkpoint_dir,
             step,
@@ -217,14 +235,8 @@ while True:
             {
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
-                "model_config": {
-                    "sequence_len": max_seq_len,
-                    "vocab_size": tokenizer.get_vocab_size(),
-                    "n_layer": depth,
-                    "n_head": model.config.n_head,
-                    "n_kv_head": model.config.n_kv_head,
-                    "n_embd": model.config.n_embd,
-                },
+                "model_type": model_type, # model architecture type
+                "model_config": model_config,
                 "user_config": user_config, # inputs to the training script
             }
         )

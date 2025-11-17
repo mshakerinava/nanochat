@@ -123,8 +123,9 @@ class WorkerPool:
                 device = torch.device(device_type) # e.g. cpu|mps
                 print(f"Loading model on {device_type}...")
 
-            model, tokenizer, _ = load_model(source, device, phase="eval", model_tag=model_tag, step=step)
-            engine = Engine(model, tokenizer)
+            model, tokenizer, meta = load_model(source, device, phase="eval", model_tag=model_tag, step=step)
+            model_type = meta.get("model_type", "gpt")  # default to "gpt" for backward compatibility
+            engine = Engine(model, tokenizer, model_type=model_type)
             autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 
             worker = Worker(

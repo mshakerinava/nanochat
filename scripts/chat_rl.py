@@ -65,7 +65,8 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-rl
 
 # Init model and tokenizer
 model, tokenizer, meta = load_model(source, device, phase="eval")
-engine = Engine(model, tokenizer) # for sampling rollouts
+model_type = meta.get("model_type", "gpt")  # default to "gpt" for backward compatibility
+engine = Engine(model, tokenizer, model_type=model_type) # for sampling rollouts
 
 # -----------------------------------------------------------------------------
 # Rollout / sampling generator loop that yields batches of examples for training
@@ -307,7 +308,7 @@ for step in range(num_steps):
     if master_process and ((step > 0 and step % save_every == 0) or step == num_steps - 1):
         base_dir = get_base_dir()
         depth = model.config.n_layer
-        model_tag = f"d{depth}" # base the model tag on the depth of the base model
+        model_tag = f"{model_type}_d{depth}" # base the model tag on the model type and depth
         checkpoint_dir = os.path.join(base_dir, "chatrl_checkpoints", model_tag)
         model_config_kwargs = model.config.__dict__ # slightly naughty, abusing the simplicity of GPTConfig, TODO nicer
         save_checkpoint(
@@ -316,6 +317,7 @@ for step in range(num_steps):
             model.state_dict(),
             None, # note: we don't bother to save the optimizer state
             {
+                "model_type": model_type,
                 "model_config": model_config_kwargs,
             }
         )

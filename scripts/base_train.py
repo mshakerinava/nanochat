@@ -20,6 +20,7 @@ import wandb
 import torch
 
 from nanochat.gpt import GPT, GPTConfig
+from nanochat.ssm import SSM, SSMConfig
 from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
@@ -35,6 +36,7 @@ run = "dummy" # wandb run name default ("dummy" is special - we won't log to wan
 # Runtime
 device_type = "" # cuda|cpu|mps (empty => autodetect good device type default, in order: CUDA > MPS > CPU)
 # Model architecture
+model_type = "gpt" # model type: "gpt" or "ssm"
 depth = 20 # the depth of the Transformer model to train, rest of the kwargs are derived
 max_seq_len = 2048 # max context length
 # Training horizon. Only one of these 3 will be used, in this order of precedence.
@@ -88,13 +90,15 @@ print0(f"Vocab size: {vocab_size:,}")
 
 # Model kwargs are derived from the desired depth of the model
 num_layers = depth
-model_dim = depth * 64 # aspect ratio 64 (usually this is varied from 64 -> 128 as model size increases)
+model_dim = depth * (64 if model_type == "gpt" else 32) # aspect ratio 64 (usually this is varied from 64 -> 128 as model size increases)
 num_heads = max(1, (model_dim + 127) // 128) # head dim 128 (the division here is ceil div)
 num_kv_heads = num_heads # default is 1:1 GQA (Group Query Attention) ratio (i.e. GQA is disabled)
+print0(f"model_type: {model_type}")
 print0(f"num_layers: {num_layers}")
 print0(f"model_dim: {model_dim}")
-print0(f"num_heads: {num_heads}")
-print0(f"num_kv_heads: {num_kv_heads}")
+if model_type == "gpt":
+    print0(f"num_heads: {num_heads}")
+    print0(f"num_kv_heads: {num_kv_heads}")
 
 # Optimizer / data / training length related hyperparameters
 # figure out the needed gradient accumulation to reach the desired total batch size
@@ -110,16 +114,24 @@ print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {
 # Initialize the Model
 
 # Create a new model with random weights
-model_config_kwargs = dict(sequence_len=max_seq_len, vocab_size=vocab_size, n_layer=num_layers, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
-with torch.device("meta"):
-    model_config = GPTConfig(**model_config_kwargs)
-    model = GPT(model_config)
+if model_type == "gpt":
+    model_config_kwargs = dict(sequence_len=max_seq_len, vocab_size=vocab_size, n_layer=num_layers, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
+    with torch.device("meta"):
+        model_config = GPTConfig(**model_config_kwargs)
+        model = GPT(model_config)
+elif model_type == "ssm":
+    model_config_kwargs = dict(sequence_len=max_seq_len, vocab_size=vocab_size, n_layer=num_layers, n_embd=model_dim, ssm_state_dim=min(256, model_dim))
+    with torch.device("meta"):
+        model_config = SSMConfig(**model_config_kwargs)
+        model = SSM(model_config)
+else:
+    raise ValueError(f"Unknown model_type: {model_type}. Must be 'gpt' or 'ssm'")
 model.to_empty(device=device)
 model.init_weights()
 
 # If we are resuming, overwrite the model parameters with those of the checkpoint
 base_dir = get_base_dir()
-output_dirname = model_tag if model_tag else f"d{depth}" # e.g. d12
+output_dirname = model_tag if model_tag else f"{model_type}_d{depth}" # e.g. gpt_d12 or ssm_d12
 checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
 resuming = resume_from_step != -1
 if resuming:
@@ -262,7 +274,7 @@ while True:
             "My favorite color is",
             "If 5*x + 3 = 13, then x is",
         ]
-        engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
+        engine = Engine(orig_model, tokenizer, model_type=model_type) # use orig_model to avoid recompilation
         for prompt in prompts:
             tokens = tokenizer(prompt, prepend="<|bos|>")
             with autocast_ctx:
@@ -280,6 +292,7 @@ while True:
             { # metadata saved as json
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
+                "model_type": model_type, # model architecture type
                 "model_config": model_config_kwargs,
                 "user_config": user_config, # inputs to the training script
                 "device_batch_size": device_batch_size,

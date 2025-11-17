@@ -37,6 +37,7 @@ for arg in sys.argv[1:]:
         assert arg.startswith('--')
         key, val = arg.split('=')
         key = key[2:]
+        key = key.replace('-', '_')
         if key in globals():
             try:
                 # attempt to eval it it (e.g. if bool, number, or etc)
