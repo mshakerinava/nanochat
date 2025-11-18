@@ -8,15 +8,15 @@ dependencies = [
     "datasets>=4.0.0",
     "fastapi>=0.117.1",
     "files-to-prompt>=0.6",
-    "mamba-ssm",
     "psutil>=7.1.0",
     "regex>=2025.9.1",
     "setuptools>=80.9.0",
     "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
-    "torch>=2.8.0",
+    "torch>=2.5.0",
     "uvicorn>=0.36.0",
-    "wandb>=0.21.3",
+    "wandb>=0.21.2",
+    "mamba-ssm>=2.2.4",
 ]
 
 [build-system]
