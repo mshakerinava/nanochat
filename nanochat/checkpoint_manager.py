@@ -39,7 +39,26 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
         torch.save(optimizer_data, optimizer_path)
         logger.info(f"Saved optimizer state to: {optimizer_path}")
 
+
+def _find_latest_step(checkpoint_dir):
+    """
+    Return the max integer step from files named model_*.pt.
+    """
+    steps = []
+    for fname in os.listdir(checkpoint_dir):
+        if fname.startswith("model_") and fname.endswith(".pt"):
+            middle = fname[len("model_"):-len(".pt")]  # e.g. "000123"
+            steps.append(int(middle))
+
+    if not steps:
+        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+
+    return max(steps)
+
+
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
+    if step is None or step == "latest":
+        step = _find_latest_step(checkpoint_dir)
     # Load the model state
     model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
     model_data = torch.load(model_path, map_location=device)

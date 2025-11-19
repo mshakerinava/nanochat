@@ -34,6 +34,11 @@ export OMP_NUM_THREADS=1
 export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
 mkdir -p $NANOCHAT_BASE_DIR
 
+deactivate || true
+module load StdEnv/2023
+module load python-build-bundle/2025a
+module load python/3.11
+module load arrow/21.0.0
 source .venv/bin/activate
 
 # -----------------------------------------------------------------------------

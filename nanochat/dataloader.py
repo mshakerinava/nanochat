@@ -26,6 +26,8 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     def document_batches():
         parquet_paths = list_parquet_files()
+        if len(parquet_paths) == 0:
+            raise RuntimeError("No parquet files found. Have you downloaded the dataset?")
         parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
         resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None

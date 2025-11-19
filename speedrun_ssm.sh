@@ -54,7 +54,7 @@ python -m nanochat.report reset
 # Base model (pretraining)
 
 # Number of processes/GPUs to use
-NPROC_PER_NODE=4
+NPROC_PER_NODE=1
 
 # Model depth
 MODEL_DEPTH=20
@@ -63,7 +63,7 @@ MODEL_DEPTH=20
 MODEL_TAG="${MODEL_TYPE}_d${MODEL_DEPTH}"
 
 # pretrain the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$MODEL_DEPTH --run=$WANDB_RUN --model_type=$MODEL_TYPE --save_every=250 --device_batch_size=16
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$MODEL_DEPTH --run=$WANDB_RUN --model_type=$MODEL_TYPE --save_every=5 --device_batch_size=16
 # evaluate the model on a larger chunk of train/val data and draw some samples
 # torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_loss -- --model-tag=$MODEL_TAG
 # # evaluate the model on CORE tasks

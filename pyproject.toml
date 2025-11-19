@@ -13,10 +13,9 @@ dependencies = [
     "setuptools>=80.9.0",
     "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
-    "torch>=2.5.0",
+    "torch>=2.8.0",
     "uvicorn>=0.36.0",
-    "wandb>=0.21.2",
-    "mamba-ssm>=2.2.4",
+    "wandb>=0.21.3",
 ]
 
 [build-system]
@@ -67,6 +66,7 @@ cpu = [
 ]  
 gpu = [  
     "torch>=2.8.0",  
+    "mamba-ssm>=2.2.4",  
 ]  
   
 [tool.uv]  
