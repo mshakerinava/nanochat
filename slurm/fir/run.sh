@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=run
+#SBATCH --job-name=ssm_d20
 #SBATCH --output=run_%j.out
 #SBATCH --error=run_%j.err
 #SBATCH --ntasks=1
@@ -7,46 +7,67 @@
 #SBATCH --gres=gpu:h100:4
 #SBATCH --time=3:00:00
 #SBATCH --mem=100G
-#SBATCH --signal=B:SIGUSR1@120
-#SBATCH --requeue
+#SBATCH --signal=TERM@120
 #SBATCH --account=rrg-bengioy-ad
 
-# Default intermediate artifacts directory is in ~/.cache/nanochat
-export OMP_NUM_THREADS=1
+set -u
+
 export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
 mkdir -p $NANOCHAT_BASE_DIR
+REPORT="$NANOCHAT_BASE_DIR/report/header.md"
+SCRIPT_PATH="$HOME/scratch/nanochat/slurm/fir/run.sh"
+CHECKPOINTS_DIR="$NANOCHAT_BASE_DIR/base_checkpoints/ssm_d20"
 
-source .venv/bin/activate
+echo "[$(date)] Job $SLURM_JOB_ID starting"
+echo "Checkpoint directory: $CHECKPOINTS_DIR"
 
-# Location to store resume state flag
-STATE_FILE="resume.flag"
-
-# On SIGUSR1: requeue the job
-_handler() {
-    echo "Caught SIGUSR1: requeueing..."
-    touch "$STATE_FILE"
-    scontrol requeue $SLURM_JOB_ID
-}
-trap _handler SIGUSR1
-
-# Determine resume mode
-RESUME_ARG=""
-if [ -f "$STATE_FILE" ]; then
-    echo "Resuming training..."
-    RESUME_ARG="--resume-from-step latest"
+#############################################################
+# 1. Stop if training is already finished
+#############################################################
+if [ -f "$REPORT" ] && grep -q "## Base model training" "$REPORT"; then
+    echo "[$(date)] Training complete — NOT resubmitting."
+    exit 0
 fi
 
-# -----------------------------------------------------------------------------
-# During the course of the run, we will be writing markdown reports to the report/
-# directory in the base dir. This command clears it out and writes a header section
-# with a bunch of system info and a timestamp that marks the start of the run.
-python -m nanochat.report reset
+#############################################################
+# 2. Auto-resubmit on timeout
+#############################################################
+on_term() {
+    echo "[$(date)] Caught SIGTERM near time limit."
 
-# -----------------------------------------------------------------------------
-# Base model (pretraining)
+    if [ -f "$REPORT" ] && grep -q "## Base model training" "$REPORT"; then
+        echo "[$(date)] Training finished — NOT resubmitting."
+        exit 0
+    fi
 
-torchrun --standalone --nproc_per_node=4 \
-    -m scripts.base_train -- \
+    echo "[$(date)] Resubmitting via sbatch $SCRIPT_PATH"
+    sbatch "$SCRIPT_PATH"
+    exit 0
+}
+trap on_term TERM
+
+#############################################################
+# 3. Environment
+#############################################################
+source .venv/bin/activate
+
+#############################################################
+# 4. Detect first run → reset report
+#############################################################
+if ! ls "$CHECKPOINTS_DIR"/meta_*.json >/dev/null 2>&1; then
+    echo "[$(date)] No checkpoints found — FIRST RUN"
+    echo "[$(date)] Resetting report with: python -m nanochat.report reset"
+    python -m nanochat.report reset
+    RESUME_ARG=""
+else
+    echo "[$(date)] Checkpoints found — RESUMING TRAINING"
+    RESUME_ARG="--resume-from-step 0"
+fi
+
+#############################################################
+# 5. Start training
+#############################################################
+torchrun --standalone --nproc_per_node=4 -m scripts.base_train -- \
     --depth=20 \
     --run=dummy \
     --model_type=ssm \

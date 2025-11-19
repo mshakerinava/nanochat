@@ -54,7 +54,7 @@ grad_clip = 1.0 # gradient clipping value (0.0 = disabled)
 warmup_ratio = 0.0 # ratio of iterations for LR warmup
 warmdown_ratio = 0.2 # ratio of iterations for LR warmdown
 final_lr_frac = 0.0 # final LR is this fraction of the initial LR
-resume_from_step = -1 # resume training from this step of the optimization (-1 = disable)
+resume_from_step = -1 # resume training from this step of the optimization (-1 = disable, 0 = latest checkpoint)
 # Evaluation
 eval_every = 250 # every how many steps to evaluate the model for val bpb
 eval_tokens = 20*524288 # number of tokens to evaluate val loss on
@@ -133,7 +133,7 @@ model.init_weights()
 base_dir = get_base_dir()
 output_dirname = model_tag if model_tag else f"{model_type}_d{depth}" # e.g. gpt_d12 or ssm_d12
 checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
-resuming = resume_from_step != -1
+resuming = (resume_from_step != -1)
 if resuming:
     print0(f"Resuming optimization from step {resume_from_step}")
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, resume_from_step, device, load_optimizer=True, rank=ddp_rank)
