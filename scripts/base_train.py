@@ -139,6 +139,7 @@ if resuming:
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, resume_from_step, device, load_optimizer=True, rank=ddp_rank)
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data # free up this memory after the copy
+    resume_from_step = meta_data["step"]
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
 model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
@@ -220,6 +221,7 @@ else:
     min_val_bpb = loop_state["min_val_bpb"]
     smooth_train_loss = loop_state["smooth_train_loss"]
     total_training_time = loop_state["total_training_time"]
+    val_bpb = meta_data["val_bpb"]
 
 # -----------------------------------------------------------------------------
 # Training loop
